@@ -1237,6 +1237,20 @@ def _bfp_specs(case):
     return found
 
 
+def build_inputs_for_case(case, mesh_device, *, op_name=None):
+    """Materialize one captured call's inputs: (device args, device kwargs, torch inputs keyed by arg position/name)."""
+    op_name = op_name or case["op"]
+    torch_inputs: dict[str, torch.Tensor] = {}
+    args = [_build_value(spec, mesh_device, case, op_name, str(i), torch_inputs) for i, spec in enumerate(case["args"])]
+    kwargs = {}
+    for name, spec in case["kwargs"].items():
+        alias = _aliased_arg(name, spec, case, args)
+        kwargs[name] = (
+            alias if alias is not None else _build_value(spec, mesh_device, case, op_name, name, torch_inputs)
+        )
+    return args, kwargs, torch_inputs
+
+
 def run_case(op, case, mesh_device, *, op_name=None, pcc=None):
     """Materialize one captured call, run it, and check the result.
 
@@ -1255,15 +1269,7 @@ def run_case(op, case, mesh_device, *, op_name=None, pcc=None):
                 "(TTNN_GRAPH_OPS_BF8_AS_BF16=1 runs it as bfloat16)"
             )
 
-    torch_inputs: dict[str, torch.Tensor] = {}
-
-    args = [_build_value(spec, mesh_device, case, op_name, str(i), torch_inputs) for i, spec in enumerate(case["args"])]
-    kwargs = {}
-    for name, spec in case["kwargs"].items():
-        alias = _aliased_arg(name, spec, case, args)
-        kwargs[name] = (
-            alias if alias is not None else _build_value(spec, mesh_device, case, op_name, name, torch_inputs)
-        )
+    args, kwargs, torch_inputs = build_inputs_for_case(case, mesh_device, op_name=op_name)
 
     out = op(*args, **kwargs)
 
