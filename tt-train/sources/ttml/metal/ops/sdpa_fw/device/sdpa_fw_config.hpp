@@ -92,7 +92,8 @@ uint32_t partial_tiles_per_row(const SDPAForwardShape& shape);  // a sender's ro
 
 struct SDPAForwardSchedule {
     std::vector<CoreUnits> per_core;
-    uint32_t num_slots = 0;  // scratch slots (one per sender)
+    uint32_t num_slots = 0;     // scratch slots (one per sender)
+    double predicted_us = 0.0;  // busiest core as placed, 0 when the lists came from the contiguous fallback
 };
 
 // Work for num_cores cores. Causal: items heavier than a core's fair share are cut into up to
@@ -118,7 +119,10 @@ uint32_t effective_num_cores(const SDPAForwardProgramConfig& config, uint32_t gr
 // fit l1_budget_bytes. Throws otherwise. (Picking the unset knobs is a search; the program factory does
 // that once per program-cache miss with resolve_chunks.)
 void check_chunks(
-    const SDPAForwardProgramConfig& config, const SDPAForwardShape& shape, uint64_t l1_budget_bytes, uint32_t grid_cores);
+    const SDPAForwardProgramConfig& config,
+    const SDPAForwardShape& shape,
+    uint64_t l1_budget_bytes,
+    uint32_t grid_cores);
 
 // check_chunks, then picks the unset chunk knobs by the cost model (with the config's pieces and cores)
 // among the configs that fit l1_budget_bytes. Throws when nothing fits.
