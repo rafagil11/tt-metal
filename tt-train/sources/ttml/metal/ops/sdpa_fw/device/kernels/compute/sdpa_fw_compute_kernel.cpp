@@ -427,9 +427,16 @@ void kernel_main() {
     cb_wait_front(cb_attn_mask, kCausalMaskTilesFronted);
 #endif
 
-    for_each_work_item(/* arg_idx */ 0, [](uint32_t item) {
-        const uint32_t first_row_tile = (item % q_num_chunks) * Sq_chunk_t;
-        process_q_chunk(item, /* k_begin */ 0, num_kv_steps_of_chunk<Ht, Sq_chunk_t, Sk_chunk_t>(first_row_tile));
+    for_each_work_unit(/* arg_idx */ 0, [](const WorkUnit& unit) {
+        if (unit.role == kUnitWhole) {
+            for (uint32_t item = unit.item; item < unit.item + unit.num_items; ++item) {
+                const uint32_t first_row_tile = (item % q_num_chunks) * Sq_chunk_t;
+                process_q_chunk(
+                    item, /* k_begin */ 0, num_kv_steps_of_chunk<Ht, Sq_chunk_t, Sk_chunk_t>(first_row_tile));
+            }
+        } else {
+            process_q_chunk(unit.item, unit.step_begin, unit.step_end);
+        }
     });
 
 #ifdef CAUSAL_MASK

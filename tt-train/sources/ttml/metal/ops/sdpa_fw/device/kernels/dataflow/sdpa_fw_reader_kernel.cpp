@@ -121,8 +121,14 @@ void kernel_main() {
 #endif
     };
 
-    for_each_work_item(work_list_arg_idx, [&](uint32_t item) {
-        const uint32_t first_row_tile = (item % q_num_chunks) * Sq_chunk_t;
-        read_q_chunk(item, /* k_begin */ 0, num_kv_steps_of_chunk<Ht, Sq_chunk_t, Sk_chunk_t>(first_row_tile));
+    for_each_work_unit(work_list_arg_idx, [&](const WorkUnit& unit) {
+        if (unit.role == kUnitWhole) {
+            for (uint32_t item = unit.item; item < unit.item + unit.num_items; ++item) {
+                const uint32_t first_row_tile = (item % q_num_chunks) * Sq_chunk_t;
+                read_q_chunk(item, /* k_begin */ 0, num_kv_steps_of_chunk<Ht, Sq_chunk_t, Sk_chunk_t>(first_row_tile));
+            }
+        } else {
+            read_q_chunk(unit.item, unit.step_begin, unit.step_end);
+        }
     });
 }
