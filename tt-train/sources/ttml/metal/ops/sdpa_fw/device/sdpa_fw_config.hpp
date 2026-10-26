@@ -51,9 +51,12 @@ struct SDPAForwardCbTiles {
     uint32_t stat;    // each of max prev/cur, exp max diff, sum prev/cur
     uint32_t mm_out;  // each of prev/cur
     uint32_t output;
+    uint32_t partial;  // each of partial in / partial out (split units)
+    uint32_t alpha;    // the partial's rescale factor (split units)
 };
 
-SDPAForwardCbTiles cb_tiles(const SDPAForwardShape& shape, const SDPAForwardChunks& chunks);
+// with_partials: the CBs of split units (sender / merger) are present.
+SDPAForwardCbTiles cb_tiles(const SDPAForwardShape& shape, const SDPAForwardChunks& chunks, bool with_partials);
 uint64_t l1_bytes(const SDPAForwardCbTiles& tiles);
 
 // Work item = one Q chunk of one head stack, see kernels/sdpa_fw_work_list.hpp. Each core gets a list
@@ -81,28 +84,48 @@ void append_unit_words(
 uint32_t num_work_items(const SDPAForwardShape& shape, const SDPAForwardChunks& chunks);
 uint32_t num_kv_steps(const SDPAForwardShape& shape, const SDPAForwardChunks& chunks, uint32_t item);
 
-// Per-core units for num_cores cores: causal items longest first, otherwise contiguous blocks; falls
-// back to contiguous blocks when the lists would not fit the runtime args.
-std::vector<CoreUnits> split_work(const SDPAForwardShape& shape, const SDPAForwardChunks& chunks, uint32_t num_cores);
+constexpr uint32_t kMaxPieces = 63U;         // num_partials has 6 bits in the unit word
+constexpr uint32_t kMaxMergersPerCore = 4U;  // semaphores per core
+constexpr uint32_t kDefaultMaxPieces = 4U;
+
+uint32_t partial_tiles_per_row(const SDPAForwardShape& shape);  // a sender's row: max, sum, output tiles
+
+struct SDPAForwardSchedule {
+    std::vector<CoreUnits> per_core;
+    uint32_t num_slots = 0;  // scratch slots (one per sender)
+};
+
+// Work for num_cores cores. Causal: items heavier than a core's fair share are cut into up to
+// max_pieces step ranges (senders + one merger), then all pieces go longest first to the least loaded
+// core; senders run before mergers on every core, so a merger never waits for a piece behind another
+// merger. Everything else: contiguous blocks. Falls back to fewer pieces, then contiguous blocks, when the
+// lists would not fit the runtime args.
+SDPAForwardSchedule make_schedule(
+    const SDPAForwardShape& shape, const SDPAForwardChunks& chunks, uint32_t num_cores, uint32_t max_pieces);
 
 // Predicted time of the busiest core in microseconds (Blackhole constants; the ranking is what matters).
 double predict_us(
     const SDPAForwardShape& shape,
     const SDPAForwardChunks& chunks,
-    const std::vector<CoreUnits>& per_core_units,
+    const SDPAForwardSchedule& schedule,
     uint32_t num_cores);
+
+uint32_t effective_max_pieces(const SDPAForwardProgramConfig& config);
+bool may_split(const SDPAForwardProgramConfig& config, const SDPAForwardShape& shape);
+uint32_t effective_num_cores(const SDPAForwardProgramConfig& config, uint32_t grid_cores);
 
 // Cheap knob checks for validate: each set knob must divide its axis, and a fully specified config must
 // fit l1_budget_bytes. Throws otherwise. (Picking the unset knobs is a search; the program factory does
 // that once per program-cache miss with resolve_chunks.)
-void check_chunks(const SDPAForwardProgramConfig& config, const SDPAForwardShape& shape, uint64_t l1_budget_bytes);
+void check_chunks(
+    const SDPAForwardProgramConfig& config, const SDPAForwardShape& shape, uint64_t l1_budget_bytes, uint32_t grid_cores);
 
-// check_chunks, then picks the unset knobs by the cost model among the configs that fit l1_budget_bytes.
-// Throws when nothing fits.
+// check_chunks, then picks the unset chunk knobs by the cost model (with the config's pieces and cores)
+// among the configs that fit l1_budget_bytes. Throws when nothing fits.
 SDPAForwardChunks resolve_chunks(
     const SDPAForwardProgramConfig& config,
     const SDPAForwardShape& shape,
     uint64_t l1_budget_bytes,
-    uint32_t num_available_cores);
+    uint32_t grid_cores);
 
 }  // namespace ttml::metal::ops::sdpa_fw::device

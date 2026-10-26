@@ -225,7 +225,8 @@ void SDPAForwardDeviceOperation::validate_on_program_cache_miss(
             .mask_type = args.mask_type,
             .has_gate = args.has_gate,
             .return_intermediates = args.return_intermediates},
-        l1_budget_bytes);
+        l1_budget_bytes,
+        device->compute_with_storage_grid_size().x * device->compute_with_storage_grid_size().y);
 }
 
 spec_return_value_t SDPAForwardDeviceOperation::compute_output_specs(
