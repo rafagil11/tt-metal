@@ -1449,6 +1449,8 @@ struct ChunkKnobs {
     uint32_t q_chunk_size;
     uint32_t k_chunk_size;
     uint32_t heads_per_item = 0U;
+    uint32_t max_pieces = 0U;
+    uint32_t num_cores = 0U;
 };
 
 // One Q row with a wide K step, many Q rows with one K tile, square, and both rectangles.
@@ -1591,6 +1593,56 @@ TEST_F(SDPAForwardTest, SDPAForwardTest_ChunkKnobs_None_DiffVDim_Gate) {
         .test_name = "ChunkKnobs_None_DiffVDim_Gate"});
 }
 
+TEST_F(SDPAForwardTest, SDPAForwardTest_ChunkKnobs_SplitUnits) {
+    SKIP_FOR_LLK_ASSERTS("Skip due to too large code size when assert is enabled.");
+    // Few heavy items on many cores: every item is heavier than a core's fair share, so the schedule cuts
+    // them into step ranges computed on different cores and merged. 2 heads, S=2048 -> 32 items of 128 rows.
+    run_chunk_knob_sweep(
+        SDPATestConfig{
+            .batch_size = 1U,
+            .sequence_length = 2048U,
+            .query_dim = 128U,
+            .key_value_dim = 128U,
+            .num_query_heads = 2U,
+            .num_key_heads = 2U,
+            .mask_type = ttml::metal::AttentionMaskType::Causal,
+            .test_name = "ChunkKnobs_SplitUnits"},
+        {{128, 256, 1, 4, 0}, {128, 256, 1, 8, 0}, {64, 128, 1, 2, 0}, {128, 256, 1, 0, 0}, {128, 256, 1, 1, 0}});
+}
+
+TEST_F(SDPAForwardTest, SDPAForwardTest_ChunkKnobs_SplitUnits_GQA_Gate) {
+    SKIP_FOR_LLK_ASSERTS("Skip due to too large code size when assert is enabled.");
+    // Splits with stacked heads, a different value dim and the gate; the gate is applied by the merger only.
+    run_chunk_knob_sweep(
+        SDPATestConfig{
+            .batch_size = 1U,
+            .sequence_length = 1024U,
+            .query_dim = 512U,      // 4 heads * 128
+            .key_value_dim = 256U,  // 2 kv heads * 128
+            .value_dim = 128U,      // 2 kv heads * 64
+            .num_query_heads = 4U,
+            .num_key_heads = 2U,
+            .mask_type = ttml::metal::AttentionMaskType::Causal,
+            .use_gate = true,
+            .test_name = "ChunkKnobs_SplitUnits_GQA_Gate"},
+        {{64, 128, 2, 4, 0}, {128, 256, 2, 3, 16}});
+}
+
+TEST_F(SDPAForwardTest, SDPAForwardTest_ChunkKnobs_NumCores) {
+    SKIP_FOR_LLK_ASSERTS("Skip due to too large code size when assert is enabled.");
+    run_chunk_knob_sweep(
+        SDPATestConfig{
+            .batch_size = 2U,
+            .sequence_length = 256U,
+            .query_dim = 256U,
+            .key_value_dim = 256U,
+            .num_query_heads = 4U,
+            .num_key_heads = 4U,
+            .mask_type = ttml::metal::AttentionMaskType::Causal,
+            .test_name = "ChunkKnobs_NumCores"},
+        {{0, 0, 0, 0, 1}, {0, 0, 0, 0, 7}, {32, 32, 1, 1, 3}});
+}
+
 TEST_F(SDPAForwardTest, SDPAForwardTest_ChunkKnobs_DefaultPick) {
     // With the knobs at 0 the cost model picks the chunking: larger than main's one Q row / four K tiles
     // where L1 allows, and always something that fits.
@@ -1610,13 +1662,13 @@ TEST_F(SDPAForwardTest, SDPAForwardTest_ChunkKnobs_DefaultPick) {
     const auto picked = resolve_chunks({}, tinyllama, kBudget, kCores);
     EXPECT_GE(picked.rows(), 4U) << "Sq=" << picked.Sq_chunk_t << " h=" << picked.heads_per_item;
     EXPECT_GE(picked.Sk_chunk_t, 4U);
-    EXPECT_LE(l1_bytes(cb_tiles(tinyllama, picked)), kBudget);
+    EXPECT_LE(l1_bytes(cb_tiles(tinyllama, picked, true)), kBudget);
 
     SDPAForwardShape wide = tinyllama;  // head dim 512: the biggest chunks do not fit, the pick must degrade
     wide.qWt = 16U;
     wide.vWt = 16U;
     const auto picked_wide = resolve_chunks({}, wide, kBudget, kCores);
-    EXPECT_LE(l1_bytes(cb_tiles(wide, picked_wide)), kBudget);
+    EXPECT_LE(l1_bytes(cb_tiles(wide, picked_wide, true)), kBudget);
 
     // A user knob pins its axis; the others are still picked.
     const auto pinned = resolve_chunks({.k_chunk_size = 32U}, tinyllama, kBudget, kCores);
@@ -1667,6 +1719,32 @@ TEST_F(SDPAForwardTest, SDPAForwardTest_ChunkKnobs_Rejected) {
     EXPECT_THROW(run(96U, 0U), std::exception) << "q_chunk_size must divide the sequence length";
     EXPECT_THROW(run(0U, 2U * S), std::exception) << "k_chunk_size must divide the sequence length";
     EXPECT_THROW(run(0U, 0U, 2U), std::exception) << "heads_per_item must divide the heads per kv head (1 here)";
+    EXPECT_THROW(
+        metal::sdpa_fw(
+            query,
+            key,
+            value,
+            metal::AttentionMaskType::Causal,
+            std::nullopt,
+            0.0F,
+            false,
+            std::nullopt,
+            {.max_pieces = 64U}),
+        std::exception)
+        << "max_pieces is capped at 63";
+    EXPECT_THROW(
+        metal::sdpa_fw(
+            query,
+            key,
+            value,
+            metal::AttentionMaskType::Causal,
+            std::nullopt,
+            0.0F,
+            false,
+            std::nullopt,
+            {.num_cores = 100000U}),
+        std::exception)
+        << "num_cores is capped at the compute grid";
 
     // Head dim 512 with whole-sequence chunks: the circular buffers do not fit L1.
     const std::array<std::size_t, 4> wide_shape{1U, 2U, S, 512U};
@@ -1703,6 +1781,12 @@ TEST_F(SDPAForwardTest, SDPAForwardTest_ChunkKnobs_ChangeProgramHash) {
     k_changed.program_config.k_chunk_size = 128U;
     Params h_changed = base;
     h_changed.program_config.heads_per_item = 2U;
+    Params p_changed = base;
+    p_changed.program_config.max_pieces = 2U;
+    EXPECT_NE(ttsl::hash::hash_objects_with_default_seed(base), ttsl::hash::hash_objects_with_default_seed(p_changed));
+    Params c_changed = base;
+    c_changed.program_config.num_cores = 8U;
+    EXPECT_NE(ttsl::hash::hash_objects_with_default_seed(base), ttsl::hash::hash_objects_with_default_seed(c_changed));
     EXPECT_NE(ttsl::hash::hash_objects_with_default_seed(base), ttsl::hash::hash_objects_with_default_seed(h_changed));
     EXPECT_NE(ttsl::hash::hash_objects_with_default_seed(base), ttsl::hash::hash_objects_with_default_seed(q_changed));
     EXPECT_NE(ttsl::hash::hash_objects_with_default_seed(base), ttsl::hash::hash_objects_with_default_seed(k_changed));
