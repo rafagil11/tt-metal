@@ -156,11 +156,10 @@ ALWI void reduce_tile(
     std::uint32_t icb, std::uint32_t icb_scaler, std::uint32_t itile, std::uint32_t itile_scaler, std::uint32_t idst) {
 #ifndef ARCH_QUASAR
     MATH((llk_math_reduce<reduce_type, reduce_dim, is_fp32_dest_acc_en, MATH_FIDELITY>(icb, icb_scaler, idst)));
-    UNPACK((llk_unpack_AB_reduce<reduce_type, reduce_dim>(icb, icb_scaler, itile, itile_scaler)));
 #else
     MATH((llk_math_reduce<reduce_type, reduce_dim>(icb, icb_scaler, idst)));
-    UNPACK((llk_unpack_AB_reduce(icb, icb_scaler, itile, itile_scaler)));
 #endif
+    UNPACK((llk_unpack_AB_reduce<reduce_type, reduce_dim>(icb, icb_scaler, itile, itile_scaler)));
 }
 
 // clang-format off

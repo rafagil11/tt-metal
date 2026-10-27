@@ -35,6 +35,20 @@ enum class PoolType : std::uint8_t
     MIN,
 };
 
+/**
+ * @brief Whether the reduce swaps its operands: the scaler goes to SrcA and the data to SrcB.
+ *
+ * REDUCE_ROW SUM/AVG multiplies the data by the scaler column with MVMUL, which streams the data rows from SrcB.
+ *
+ * @tparam POOL_TYPE: Type of reduce pool op, values = <MAX/SUM/AVG>
+ * @tparam REDUCE_DIMENSION: Reduction dimension, values = <REDUCE_ROW/REDUCE_COL/REDUCE_SCALAR>
+ */
+template <PoolType POOL_TYPE, ReduceDim REDUCE_DIMENSION>
+constexpr bool reduce_swaps_operands()
+{
+    return REDUCE_DIMENSION == ReduceDim::REDUCE_ROW && POOL_TYPE != PoolType::MAX;
+}
+
 enum class DataCopyType : std::uint8_t
 {
     A2D,
